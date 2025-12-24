@@ -42,16 +42,26 @@ def load_data():
     else: df['district'] = df['district'].fillna("未分類")
 
     # 產生 mapped_tags
-    def get_mapped_tags(raw_tags):
+    # 產生 mapped_tags
+    def get_mapped_tags(row):
         mapped = set()
-        for tag in str(raw_tags).split(','):
+        # 1. Check Tags
+        for tag in str(row['tags']).split(','):
             t = tag.strip()
             for category, keywords in TAG_MAPPING.items():
                 if t in keywords or any(k in t for k in keywords):
                     mapped.add(category)
+        
+        # 2. Check Name (Keywords in Name)
+        # e.g. "旗山車站" contains "車站" -> matches 鐵道交通
+        name = str(row['name'])
+        for category, keywords in TAG_MAPPING.items():
+            if any(k in name for k in keywords):
+                mapped.add(category)
+                
         return list(mapped)
     
-    df['mapped_tags'] = df['tags'].apply(get_mapped_tags)
+    df['mapped_tags'] = df.apply(get_mapped_tags, axis=1)
     return df
 
 @st.cache_data
@@ -72,6 +82,12 @@ def load_night_markets():
         if 'image_url' not in df.columns: df['image_url'] = ""
         df['image_url'] = df['image_url'].fillna("")
         
+        # [Fix] Ensure lat/lon columns exist
+        if 'latitude' not in df.columns: df['latitude'] = 0.0
+        if 'longitude' not in df.columns: df['longitude'] = 0.0
+        df['latitude'] = df['latitude'].fillna(0.0)
+        df['longitude'] = df['longitude'].fillna(0.0)
+        
         # Default Taiwan Night Market Image
         default_img = "https://images.unsplash.com/photo-1528164344705-47542687000d?q=80&w=600&auto=format&fit=crop"
         
@@ -87,36 +103,36 @@ def calculate_recommendations(df, user_prefs, specific_tags=[], days=1):
     if df.empty: return None
 
     # 1. 計算類別分數 (根據 mapped_tags)
-    # 1. 計算類別分數 (根據 mapped_tags)
     def calculate_score(row):
         score = 0
         tags = row['mapped_tags']
         
-        # 基礎偏好權重 (5大面向)
-        # 1. 自然光譜
-        if "⛰️ 山林步道" in tags or "🌊 海港水域" in tags or "🛖 原民部落" in tags: 
-            score += user_prefs.get('nature', 0.5)
-            
-        # 2. 老靈魂 (歷史/宗教)
-        if "🏯 歷史古蹟" in tags or "🙏 宗教巡禮" in tags or "🏘️ 眷村故事" in tags or "🛖 原民部落" in tags:
-            score += user_prefs.get('history', 0.5)
-            
-        # 3. 新潮流 (網美/文創)
-        if "🎨 藝文文創" in tags or "📸 網美打卡" in tags or "🏘️ 眷村故事" in tags:
-            score += user_prefs.get('trend', 0.5)
-            
-        # 4. 玩樂性質 (親子)
-        if "🎡 親子樂園" in tags:
-            score += user_prefs.get('fun', 0.5)
-            
-        # 5. 都市生活 (逛街/美食)
-        if "🛍️ 逛街美食" in tags:
-            score += user_prefs.get('urban', 0.5)
+        # 1. Attribute-based Scoring (Base Score from CSV columns 0~1)
+        # 屬性欄位: nature, culture, entertainment, food
+        
+        # 自然 (Nature) -> nature
+        score += row.get('nature', 0) * user_prefs.get('nature', 0.5)
+        
+        # 歷史/文化 (History) -> culture
+        score += row.get('culture', 0) * user_prefs.get('history', 0.5)
+        
+        # 玩樂/親子 (Fun) -> entertainment + activity
+        # Combine ent and activity for better coverage
+        fun_score = (row.get('entertainment', 0) + row.get('activity', 0)) / 2
+        score += fun_score * user_prefs.get('fun', 0.5)
+        
+        # 都市/美食 (Urban) -> food + entertainment
+        urban_score = (row.get('food', 0) + row.get('entertainment', 0)) / 2
+        score += urban_score * user_prefs.get('urban', 0.5)
+        
+        # 新潮流 (Trend) - No direct column, use Tags + partial Culture
+        if "🎨 藝文文創" in tags or "📸 網美打卡" in tags:
+             score += user_prefs.get('trend', 0.5)
         
         # 特定標籤加權 (來自使用者選取的 Pill Tags)
         for t in specific_tags:
             if t in tags:
-                score += 0.3 # 選中標籤加分
+                score += 0.5
         
         return score
 
