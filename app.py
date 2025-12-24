@@ -456,6 +456,10 @@ elif st.session_state.current_page == PAGES[1]:
                 'start_date': str(start_d),
                 'pre_spent': pre_spent
             })
+            # [Fix] Reset itinerary and candidates to ensure clean state for "New Trip"
+            st.session_state.itinerary = []
+            st.session_state.candidates = []
+            st.session_state.recommendations = None
             save_current_state()
             navigate_to(PAGES[2]); st.rerun()
 
@@ -619,7 +623,7 @@ elif st.session_state.current_page == PAGES[3]:
     with col_source:
         st.subheader("🎯 景點來源")
         # [Mod] Rename & Add Candidate Tab
-        tab_ai, tab_filter, tab_night, tab_custom, tab_candidate = st.tabs(["🤖 AI推薦", "🔍 自行選擇", "🌙 夜市專區", "✏️ 手動加入", "❤️ 候選清單"])
+        tab_ai, tab_filter, tab_night, tab_custom, tab_fav = st.tabs(["🤖 AI推薦", "🔍 自行選擇", "🌙 夜市專區", "✏️ 手動加入", "❤️ 候選清單"])
         
         # Helper for google maps link
         def gmaps_link(lat, lon, name):
@@ -852,7 +856,8 @@ elif st.session_state.current_page == PAGES[3]:
                             safe_add_item({
                                 "Name": row['name'], "Day": add_day, "Start": str(n_time)[:5],
                                 "End": str((datetime.datetime.combine(datetime.date.today(), n_time) + datetime.timedelta(minutes=90)).time())[:5],
-                                "Cost": 300, "Note": "夜市"
+                                "Cost": 300, "Note": "夜市",
+                                "latitude": row.get('latitude', 0.0), "longitude": row.get('longitude', 0.0)
                             })
                             st.rerun()
                             
@@ -899,6 +904,54 @@ elif st.session_state.current_page == PAGES[3]:
                         "Cost": 0, "Note": note, "latitude": lat, "longitude": lon
                     })
                     st.rerun()
+
+        # [Tab 5] 候選清單
+        with tab_fav:
+            if not st.session_state.candidates:
+                st.info("尚未加入任何候選景點。請在其他頁籤點擊 ❤️ 加入。")
+            else:
+                for i, cand in enumerate(st.session_state.candidates):
+                    with st.container(border=True):
+                        c1, c2 = st.columns([1, 2])
+                        with c1:
+                            if cand.get('image_url'):
+                                st.image(cand['image_url'], use_container_width=True)
+                            else:
+                                st.markdown("📷 無圖")
+                        
+                        with c2:
+                            h1, h2 = st.columns([4, 1])
+                            with h1:
+                                st.markdown(f"**{cand['Name']}**")
+                                st.caption(f"📝 {cand.get('Note', '')}")
+                            with h2:
+                                if st.button("🗑️", key=f"del_fav_{i}", help="移除"):
+                                    st.session_state.candidates.pop(i)
+                                    save_current_state()
+                                    st.rerun()
+
+                            # Controls
+                            ac1, ac2, ac3, ac4 = st.columns([1.5, 1.2, 0.6, 0.8], vertical_alignment="bottom")
+                            sel_day_str = ac1.selectbox("加入天數", day_options, key=f"fav_d_{i}")
+                            n_time = ac2.time_input("預計時間", value=datetime.time(10, 0), key=f"fav_t_{i}", step=60)
+                            
+                            if ac3.button("📍", key=f"loc_fav_{i}", help="地圖"):
+                                st.session_state.map_center = [cand.get('latitude', 22.62), cand.get('longitude', 120.30)]
+                                st.session_state.focus_spot = {"name": cand['Name'], "lat": cand.get('latitude'), "lon": cand.get('longitude')}
+
+                            if ac4.button("➕", key=f"add_fav_{i}", type="secondary", use_container_width=True):
+                                add_day = int(sel_day_str.split(" ")[1])
+                                safe_add_item({
+                                    "Name": cand['Name'], "Day": add_day, "Start": str(n_time)[:5],
+                                    "End": str((datetime.datetime.combine(datetime.date.today(), n_time) + datetime.timedelta(minutes=60)).time())[:5],
+                                    # Copy cost from candidate (e.g. night market 300, others 0)
+                                    "Cost": cand.get('Cost', 0), 
+                                    "Note": f"候選 - {cand.get('Note', '')}",
+                                    "latitude": cand.get('latitude'), "longitude": cand.get('longitude')
+                                })
+                                st.toast(f"已從候選加入：{cand['Name']}")
+                                st.rerun()
+
     # === 右側：看板區 ===
     with col_planner:
         st.subheader("📋 行程看板")
@@ -927,15 +980,26 @@ elif st.session_state.current_page == PAGES[3]:
 
         # Kanban
         total_days = st.session_state.trip_info['days']
-        # [Mod] Use Tabs for Day Columns
-        # [Mod] Revert to Columns but with horizontal scrolling simulation using container + many columns
-        # User said: "視旅遊涮或欄位寬度加入左右滑動功能"
-        # Since Streamlit columns don't scroll, we just use columns. If too many, it squashes. 
-        # User explicitly asked to revert to "Day Columns".
-        
-        # We can put it in a container that allows specific width? No easy way in native Streamlit.
-        # Let's just use st.columns(total_days).
-        
+        if st.toggle("↔️ 啟用水平捲動模式 (當天數多時推薦)", value=True):
+            # [Fix] Scoped CSS using a specific marker class
+            # We inject a marker div, then use :has() selector to target the sibling HorizontalBlock
+            st.markdown("""
+                <style>
+                /* Scope: Only target HorizontalBlock inside a VerticalBlock that HAS the itinerary-marker */
+                div[data-testid="stVerticalBlock"]:has(.itinerary-marker) > div[data-testid="stHorizontalBlock"] {
+                    overflow-x: auto !important;
+                    flex-wrap: nowrap !important;
+                    padding-bottom: 10px;
+                }
+                div[data-testid="stVerticalBlock"]:has(.itinerary-marker) > div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+                    flex: 0 0 auto !important;
+                    min-width: 300px !important;
+                }
+                </style>
+            """, unsafe_allow_html=True)
+            
+        # Marker for CSS scoping
+        st.markdown('<div class="itinerary-marker"></div>', unsafe_allow_html=True)
         day_cols = st.columns(total_days)
         start_dt = datetime.datetime.strptime(st.session_state.trip_info['start_date'], "%Y-%m-%d").date()
         w_map = {0:"一", 1:"二", 2:"三", 3:"四", 4:"五", 5:"六", 6:"日"}
@@ -1122,22 +1186,65 @@ elif st.session_state.current_page == PAGES[4]:
         if total_cost > 0:
                 st.markdown("#### 花費細項")
                 st.dataframe(chart_data.sort_values('Cost', ascending=False), use_container_width=True, hide_index=True)
+        
+        # [Fix] Prepare DataFrame for CSV
+        if st.session_state.itinerary:
+            # Create a copy to avoid modifying session state in place
+            export_data = []
+            for item in st.session_state.itinerary:
+                # Flat copy
+                row = item.copy()
+                
+                # Format SubBudgets to readable string
+                # e.g. [{'Category': '飲食', 'Cost': 100}] -> "飲食: $100"
+                subs = row.get('SubBudgets', [])
+                if isinstance(subs, list) and subs:
+                    # Join meaningful parts
+                    desc_list = []
+                    for s in subs:
+                        c = s.get('Category', '其他')
+                        v = s.get('Cost', 0)
+                        n = s.get('Note', '')
+                        note_str = f"({n})" if n else ""
+                        desc_list.append(f"{c}{note_str}: ${v}")
+                    row['SubBudgets'] = " | ".join(desc_list)
+                else:
+                    row['SubBudgets'] = ""
+                export_data.append(row)
+
+            final_df = pd.DataFrame(export_data)
             
+            # Ensure columns exist even if empty
+            cols_to_keep = ['Day', 'Start', 'End', 'Name', 'Note', 'Cost', 'SubBudgets']
+            for c in cols_to_keep:
+                if c not in final_df.columns: final_df[c] = ""
+            final_df = final_df[cols_to_keep] # Reorder
+            
+            # Rename for display
+            final_df.columns = ['天數', '開始時間', '結束時間', '景點名稱', '備註', '總花費', '預算細項']
+            
+        else:
+            final_df = pd.DataFrame(columns=['天數', '開始時間', '結束時間', '景點名稱', '備註', '總花費', '預算細項'])
+
         st.header("📤 匯出行程")
-        st.container(border=True)
-        ec1, ec2 = st.columns(2)
-        with ec1:
-            st.markdown("##### 表格式 (CSV)")
-            st.caption("適合匯入 Excel 進行詳細編輯")
-            csv = final_df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("下載 CSV", csv, "trip.csv", "text/csv", use_container_width=True)
+        with st.container(border=True):
+            st.markdown("##### 📋 行程預覽")
+            st.dataframe(final_df, use_container_width=True, hide_index=True)
+            st.divider()
             
-        with ec2:
-            st.markdown("##### 文字檔 (TXT)")
-            st.caption("適合直接傳給朋友或列印")
-            if st.button("產生 TXT 預覽與下載", use_container_width=True):
-                 txt_bytes = create_txt(st.session_state.itinerary, st.session_state.trip_info['name'], st.session_state.trip_info['budget'])
-                 st.download_button("✅ 點擊下載 TXT", txt_bytes, "trip.txt", "text/plain", type="primary", use_container_width=True)
+            ec1, ec2 = st.columns(2)
+            with ec1:
+                st.markdown("##### 表格式 (CSV)")
+                st.caption("適合匯入 Excel 進行詳細編輯")
+                csv = final_df.to_csv(index=False).encode('utf-8-sig')
+                st.download_button("下載 CSV", csv, "trip.csv", "text/csv", use_container_width=True)
+                
+            with ec2:
+                st.markdown("##### 文字檔 (TXT)")
+                st.caption("適合直接傳給朋友或列印")
+                if st.button("產生 TXT 預覽與下載", use_container_width=True):
+                     txt_bytes = create_txt(st.session_state.itinerary, st.session_state.trip_info['name'], st.session_state.trip_info['budget'])
+                     st.download_button("✅ 點擊下載 TXT", txt_bytes, "trip.txt", "text/plain", type="primary", use_container_width=True)
     
     st.divider()
     st.subheader("💾 儲存此行程")
@@ -1151,3 +1258,4 @@ elif st.session_state.current_page == PAGES[4]:
                 st.error("請輸入名稱")
 
     st.divider()
+
