@@ -764,7 +764,6 @@ elif st.session_state.current_page == PAGES[3]:
             df_night = load_night_markets()
             
             # Night Market Filter
-            nm_days_map = {"ㄧ": "0", "二": "1", "三": "2", "四": "3", "五": "4", "六": "5", "日": "6"}
             nm_days_list = ["全部", "週一", "週二", "週三", "週四", "週五", "週六", "週日"]
             
             # Default to Today
@@ -774,22 +773,12 @@ elif st.session_state.current_page == PAGES[3]:
             sel_nm_filter = st.selectbox("📅 營業日篩選", nm_days_list, index=default_ix)
             
             if sel_nm_filter != "全部":
-                target_d = str(nm_days_list.index(sel_nm_filter) - 1) # Map back to 0-6
-                # Filter logic: check if target_d is in row['days'] column (which is string like "1,3,5")
-                # Note: CSV data for days column looks like "1,3,5" or "0,1,2..."
+                idx = nm_days_list.index(sel_nm_filter)
+                target_d = str(idx % 7) 
                 df_night = df_night[df_night['days'].astype(str).apply(lambda x: target_d in x)]
             
-            # [Mod] Format days logic
+            # Format days logic
             def format_days(d_str):
-                # 0->日, 1->ㄧ... but CSV assumes 0=Mon or 0=Sun? user said "0123456" is confusing.
-                # Assuming standard python weekday 0=Mon, 6=Sun.
-                # If "0123456" means Sun-Sat? Let's assume input data 0=Mon for now or check usage.
-                # User said "change to Sun Mon...".
-                # Standard convention: 0123456 -> usually Mon..Sun or Sun..Sat.
-                # Let's map 0->一, 1->二 ... 6->日 if using python default.
-                # If originally 0=Sun, 1=Mon...
-                # Let's just do a char replacement: 0:一, 1:二... or use a map.
-                # Given user request "0123456 -> 日一二三四五六", implies 0=日.
                 mapping = {"0":"日", "1":"一", "2":"二", "3":"三", "4":"四", "5":"五", "6":"六"}
                 res = ""
                 for char in str(d_str):
@@ -985,23 +974,27 @@ elif st.session_state.current_page == PAGES[3]:
             # We inject a marker div, then use :has() selector to target the sibling HorizontalBlock
             st.markdown("""
                 <style>
-                /* Scope: Only target HorizontalBlock inside a VerticalBlock that HAS the itinerary-marker */
-                div[data-testid="stVerticalBlock"]:has(.itinerary-marker) > div[data-testid="stHorizontalBlock"] {
+                /* Scope: TARGET SPECIFIC CONTAINER with wrapper adjustment */
+                /* We target stVerticalBlock -> stElementContainer (generic div) -> stHorizontalBlock */
+                div[data-testid="stVerticalBlock"]:has(.itinerary-marker) > div > div[data-testid="stHorizontalBlock"] {
                     overflow-x: auto !important;
                     flex-wrap: nowrap !important;
                     padding-bottom: 10px;
                 }
-                div[data-testid="stVerticalBlock"]:has(.itinerary-marker) > div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+                div[data-testid="stVerticalBlock"]:has(.itinerary-marker) > div > div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
                     flex: 0 0 auto !important;
                     min-width: 300px !important;
                 }
                 </style>
             """, unsafe_allow_html=True)
             
-        # Marker for CSS scoping
-        st.markdown('<div class="itinerary-marker"></div>', unsafe_allow_html=True)
-        day_cols = st.columns(total_days)
-        start_dt = datetime.datetime.strptime(st.session_state.trip_info['start_date'], "%Y-%m-%d").date()
+        # [Fix] Wrap in container to ensure the selector only applies here
+        with st.container():
+            # Marker for CSS scoping
+            st.markdown('<div class="itinerary-marker"></div>', unsafe_allow_html=True)
+            day_cols = st.columns(total_days)
+            
+            start_dt = datetime.datetime.strptime(st.session_state.trip_info['start_date'], "%Y-%m-%d").date()
         w_map = {0:"一", 1:"二", 2:"三", 3:"四", 4:"五", 5:"六", 6:"日"}
         
         sorted_items = sorted(st.session_state.itinerary, key=lambda x: x.get('Start', '00:00'))
